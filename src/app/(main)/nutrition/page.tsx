@@ -156,10 +156,10 @@ export default function NutritionPage() {
             <Card>
               <CardContent className="p-4">
                 <p className="text-xs text-muted-foreground">{s.label}</p>
-                <p className={`text-xl font-bold font-display ${s.color}`}>
+                <span className={`text-xl font-bold font-display ${s.color}`}>
                   {loading ? <Skeleton className="h-7 w-12 inline-block" /> : s.value}
                   <span className="text-xs font-normal text-muted-foreground ml-1">{s.unit}</span>
-                </p>
+                </span>
               </CardContent>
             </Card>
           </motion.div>

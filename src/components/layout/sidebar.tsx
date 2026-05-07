@@ -102,10 +102,8 @@ export function AppSidebar() {
     <>
       {/* Mobile: Sheet drawer */}
       <Sheet>
-        <SheetTrigger>
-          <Button variant="ghost" size="icon" className="fixed top-3 left-3 z-50 lg:hidden">
-            <Menu className="h-5 w-5" />
-          </Button>
+        <SheetTrigger className="fixed top-3 left-3 z-50 lg:hidden inline-flex items-center justify-center rounded-lg size-8 hover:bg-muted transition-colors">
+          <Menu className="h-5 w-5" />
         </SheetTrigger>
         <SheetContent side="left" className="w-64 p-0">
           <div className="flex h-14 items-center border-b px-4">
