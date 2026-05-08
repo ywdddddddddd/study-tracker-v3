@@ -167,8 +167,8 @@ test.describe('AI Assistant', () => {
     await page.goto('/ai');
     await page.waitForLoadState('networkidle');
 
-    const textarea = page.locator('textarea');
-    await expect(textarea.first()).toBeVisible({ timeout: 5000 });
+    const chatInput = page.locator('input[placeholder*="输入"]').first();
+    await expect(chatInput).toBeVisible({ timeout: 5000 });
   });
 
   test('command badges visible', async ({ page }) => {
