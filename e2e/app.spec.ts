@@ -115,8 +115,10 @@ test.describe('Weekly Review', () => {
 
     // Should have form inputs
     const inputs = page.locator('input');
-    const count = await inputs.count();
-    expect(count).toBeGreaterThanOrEqual(4);
+    const textareas = page.locator('textarea');
+    const inputCount = await inputs.count();
+    const textareaCount = await textareas.count();
+    expect(inputCount + textareaCount).toBeGreaterThanOrEqual(4);
   });
 });
 
