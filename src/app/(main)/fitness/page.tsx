@@ -1,192 +1,125 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Dumbbell, ChevronDown } from "lucide-react";
+import dayjs from "dayjs";
+import { ChevronDown, ChevronUp, X, Plus, Flame, Dumbbell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { getGymSchedules, saveGymSchedule, getWorkoutLog, type WorkoutLog } from "@/lib/db";
+import { WORKOUT_PRESETS, GYM_SCHEDULE } from "@/data/presets";
+import { getOrCreateProfile, getWorkoutLog, saveWorkoutLog, getGymSchedules, saveGymSchedule, type WorkoutLog } from "@/lib/db";
 
-const GYM_TYPES = ["推", "拉", "腿", "休"];
-
-const container = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.04 } },
-};
-const item = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: "easeOut" as const } },
-};
-
-function getWeekDates() {
-  const today = new Date();
-  const day = today.getDay();
-  const diff = today.getDate() - day + (day === 0 ? -6 : 1);
-  const monday = new Date(today.setDate(diff));
-  const dates: { date: string; weekday: string; iso: string }[] = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    dates.push({ date: iso, weekday: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][i], iso });
-  }
-  return dates;
-}
-
-function getToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-export default function FitnessPage() {
-  const [loading, setLoading] = useState(true);
-  const [schedules, setSchedules] = useState<{ date: string; gym: string }[]>([]);
-  const [todayWorkout, setTodayWorkout] = useState<WorkoutLog | null>(null);
-  const weekDates = getWeekDates();
-  const today = getToday();
-
-  useEffect(() => { loadData(); }, []);
-
-  async function loadData() {
-    try {
-      const [scheds, workout] = await Promise.all([getGymSchedules(), getWorkoutLog(today)]);
-      setSchedules(scheds);
-      setTodayWorkout(workout);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
-  }
-
-  async function updateGym(date: string, gym: string) {
-    try {
-      await saveGymSchedule(date, gym);
-      setSchedules((prev) => {
-        const idx = prev.findIndex((s) => s.date === date);
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy[idx] = { date, gym };
-          return copy;
-        }
-        return [...prev, { date, gym }];
-      });
-      toast.success(`已更新为「${gym}」`);
-    } catch (e) {
-      toast.error("更新失败");
+function calculateBurn(log: WorkoutLog, weightKg: number): number {
+  let cardioTotal = 0;
+  for (const ex of log.exercises) {
+    if (ex.kind === "cardio" && ex.cardioParams) {
+      const speed = ex.cardioParams.speed || 0;
+      const incline = ex.cardioParams.incline || 0;
+      const duration = ex.cardioParams.duration || 0;
+      cardioTotal += ((speed * 0.2 + incline * 0.9 + 3.5) / 3.5) * weightKg * (duration / 60);
     }
   }
+  const cardioDuration = log.exercises.filter(e => e.kind === "cardio").reduce((sum, e) => sum + (e.cardioParams?.duration || 0), 0);
+  const strengthDuration = Math.max(0, (log.duration || 0) - cardioDuration);
+  return Math.round(cardioTotal + (strengthDuration > 0 ? 4.5 * weightKg * (strengthDuration / 60) : 0));
+}
 
-  function getGym(date: string) {
-    return schedules.find((s) => s.date === date)?.gym || "";
+function getCardioDuration(log: WorkoutLog): number { return log.exercises.filter(e => e.kind === "cardio").reduce((sum, e) => sum + (e.cardioParams?.duration || 0), 0); }
+function getStrengthDuration(log: WorkoutLog): number { return Math.max(0, (log.duration || 0) - getCardioDuration(log)); }
+
+export default function FitnessPage() {
+  const [date, setDate] = useState(dayjs().format("YYYY-MM-DD"));
+  const [log, setLog] = useState<WorkoutLog | null>(null);
+  const [selectedPreset, setSelectedPreset] = useState("push");
+  const [saved, setSaved] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  const [weight, setWeight] = useState(84);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [gymSchedule, setGymSchedule] = useState<{ date: string; weekday: string; gym: string }[]>([]);
+  const [editingGym, setEditingGym] = useState<string | null>(null);
+
+  const loadGymSchedule = async () => {
+    const overrides = await getGymSchedules();
+    const map: Record<string, string> = {}; for (const o of overrides) map[o.date] = o.gym;
+    setGymSchedule(GYM_SCHEDULE.map(s => ({ ...s, gym: map[s.date] || s.gym })));
+  };
+  useEffect(() => { if (showSchedule) loadGymSchedule(); }, [showSchedule]);
+  const changeGym = async (d: string, newGym: string) => { setGymSchedule(prev => prev.map(s => s.date === d ? { ...s, gym: newGym } : s)); setEditingGym(null); await saveGymSchedule(d, newGym); };
+
+  useEffect(() => { loadData(); }, [date]);
+  async function loadData() {
+    const profile = await getOrCreateProfile(); setWeight(profile.weight);
+    const existing = await getWorkoutLog(date);
+    if (existing) { setLog(existing); setSelectedPreset(existing.type); }
+    else applyPreset(selectedPreset);
   }
+  const applyPreset = (type: string) => {
+    setSelectedPreset(type);
+    const preset = WORKOUT_PRESETS.find(p => p.type === type);
+    const newLog: WorkoutLog = { date, type: type as WorkoutLog["type"], exercises: preset?.exercises.map(e => ({
+      name: e.name, kind: e.kind, sets: e.kind === "strength" ? Array(e.sets).fill({ reps: 0, weight: 0 }) : [],
+      cardioParams: e.kind === "cardio" ? (e.cardioParams || { speed: 8, incline: 1, duration: 20 }) : undefined,
+    })) || [], duration: 60, notes: "" };
+    setLog(newLog);
+  };
+  const updateExerciseName = (exIdx: number, name: string) => { if (!log) return; const exs = [...log.exercises]; exs[exIdx] = { ...exs[exIdx], name }; setLog({ ...log, exercises: exs }); };
+  const toggleKind = (exIdx: number) => { if (!log) return; const exs = [...log.exercises]; const ex = exs[exIdx]; const nk = ex.kind === "strength" ? "cardio" : "strength"; exs[exIdx] = { ...ex, kind: nk as "strength"|"cardio", sets: nk === "strength" ? [{ reps: 0, weight: 0 }] : [], cardioParams: nk === "cardio" ? { speed: 8, incline: 1, duration: 20 } : undefined }; setLog({ ...log, exercises: exs }); };
+  const updateSet = (exIdx: number, setIdx: number, field: "reps"|"weight", val: number) => { if (!log) return; const exs = [...log.exercises]; exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets] }; exs[exIdx].sets[setIdx] = { ...exs[exIdx].sets[setIdx], [field]: val }; setLog({ ...log, exercises: exs }); };
+  const updateCardioParam = (exIdx: number, field: "speed"|"incline"|"duration", val: number) => { if (!log) return; const exs = [...log.exercises]; exs[exIdx] = { ...exs[exIdx], cardioParams: { ...exs[exIdx].cardioParams, [field]: val } }; setLog({ ...log, exercises: exs }); };
+  const addSet = (exIdx: number) => { if (!log) return; const exs = [...log.exercises]; exs[exIdx] = { ...exs[exIdx], sets: [...exs[exIdx].sets, { reps: 0, weight: 0 }] }; setLog({ ...log, exercises: exs }); };
+  const removeSet = (exIdx: number, setIdx: number) => { if (!log) return; const exs = [...log.exercises]; exs[exIdx] = { ...exs[exIdx], sets: exs[exIdx].sets.filter((_, i) => i !== setIdx) }; setLog({ ...log, exercises: exs }); };
+  const addExercise = () => { if (!log) return; setLog({ ...log, exercises: [...log.exercises, { name: "新动作", kind: "strength" as const, sets: [{ reps: 0, weight: 0 }] }] }); };
+  const removeExercise = (exIdx: number) => { if (!log) return; setLog({ ...log, exercises: log.exercises.filter((_, i) => i !== exIdx) }); };
+  const save = async () => { if (!log) return; await saveWorkoutLog(log); setSaved(true); setTimeout(() => setSaved(false), 2000); toast.success("已保存"); };
 
-  return (
-    <div className="space-y-6">
-      <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="font-heading text-2xl">健身运动</h1>
-        <p className="text-sm text-muted-foreground mt-1">{today}</p>
-      </motion.div>
-
-      {/* Schedule Grid */}
-      <motion.div variants={container} initial="hidden" animate="show">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Dumbbell className="h-4 w-4" />
-              本周训练日程
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  {weekDates.map((d) => (
-                    <TableHead key={d.iso} className="text-center text-xs">
-                      <div>{d.weekday}</div>
-                      <div className="text-muted-foreground font-normal">{d.iso.slice(5)}</div>
-                    </TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow>
-                  {weekDates.map((d) => {
-                    const gym = getGym(d.iso);
-                    return (
-                      <TableCell key={d.iso} className="text-center p-2">
-                        <Select value={gym || "—"} onValueChange={(v) => updateGym(d.iso, v || "—")}>
-                          <SelectTrigger className="h-8 w-full text-xs justify-center gap-1 [&>svg]:hidden">
-                            <SelectValue placeholder="—" />
-                            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="—">—</SelectItem>
-                            {GYM_TYPES.map((t) => (
-                              <SelectItem key={t} value={t}>{t}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {gym && (
-                          <Badge
-                            variant="outline"
-                            className={
-                              gym === "推" ? "bg-blue-50 text-blue-700" :
-                              gym === "拉" ? "bg-green-50 text-green-700" :
-                              gym === "腿" ? "bg-orange-50 text-orange-700" :
-                              "bg-muted text-muted-foreground"
-                            }
-                          >
-                            {gym}
-                          </Badge>
-                        )}
-                      </TableCell>
-                    );
-                  })}
-                </TableRow>
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* Today's Workout */}
-      <motion.div variants={item} initial="hidden" animate="show">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">今日训练记录</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <Skeleton className="h-20 w-full" />
-            ) : todayWorkout ? (
-              <div className="space-y-3">
-                <Badge>{todayWorkout.type}</Badge>
-                <div className="text-sm text-muted-foreground">
-                  时长 {todayWorkout.duration} 分钟
-                </div>
-                {todayWorkout.exercises.map((ex, i) => (
-                  <div key={i} className="flex justify-between text-sm border-b pb-1 last:border-0">
-                    <span>{ex.name}</span>
-                    <span className="text-muted-foreground">
-                      {ex.sets.map((s) => `${s.reps}×${s.weight}kg`).join(" · ")}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">今天还没有训练记录</p>
-            )}
-          </CardContent>
-        </Card>
-      </motion.div>
-    </div>
-  );
+  return (<div className="space-y-6">
+    <motion.div initial={{opacity:0,y:-8}} animate={{opacity:1,y:0}} className="flex items-center gap-2 flex-wrap">
+      <h1 className="font-heading text-2xl">健身运动</h1>
+      <Input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-auto h-8 text-sm"/>
+      <div className="flex gap-1">{WORKOUT_PRESETS.map(p=>(<Button key={p.type} variant={selectedPreset===p.type?"default":"outline"} size="sm" onClick={()=>applyPreset(p.type)}>{p.type==="push"?"推":p.type==="pull"?"拉":p.type==="legs"?"腿":"休"}</Button>))}</div>
+      <Button variant="outline" size="sm" onClick={()=>setShowSchedule(!showSchedule)}>📅 {showSchedule?"隐藏日程":"健身日程"}</Button>
+      <Button onClick={save} className="ml-auto">{saved?"✅ 已保存":"💾 保存"}</Button>
+    </motion.div>
+    {showSchedule && (<Card><CardHeader className="pb-3"><CardTitle className="text-base">健身日程 (4周)</CardTitle></CardHeader><CardContent>
+      <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-1 text-xs">{gymSchedule.map(s=>{const isToday=s.date===dayjs().format("YYYY-MM-DD");
+        return (<div key={s.date} className={`p-2 rounded-md text-center border ${isToday?"border-primary bg-primary/10 font-semibold":s.gym==="休"?"border-gray-200 bg-gray-50":"border-blue-200 bg-blue-50/50 hover:bg-blue-100"}`}>
+          <div className="text-[10px] cursor-pointer" onClick={()=>{setDate(s.date);setShowSchedule(false);}}>{s.weekday}</div>
+          <div className="text-[11px] font-medium cursor-pointer" onClick={()=>{setDate(s.date);setShowSchedule(false);}}>{s.date.slice(5)}</div>
+          {editingGym===s.date?(<select value={s.gym} onChange={e=>changeGym(s.date,e.target.value)} onBlur={()=>setEditingGym(null)} autoFocus className="text-xs mt-0.5 px-1 py-0.5 rounded w-full border bg-background"><option value="推">推</option><option value="拉">拉</option><option value="腿">腿</option><option value="休">休</option></select>)
+            :(<div onClick={e=>{e.stopPropagation();setEditingGym(s.date);}} className={`text-xs mt-0.5 px-1 rounded cursor-pointer hover:ring-1 hover:ring-primary ${s.gym==="推"?"bg-red-100 text-red-700":s.gym==="拉"?"bg-blue-100 text-blue-700":s.gym==="腿"?"bg-green-100 text-green-700":"bg-gray-100 text-gray-500"}`}>{s.gym}</div>)}
+        </div>);})}</div>
+    </CardContent></Card>)}
+    {log && (<Card><CardHeader className="pb-3"><CardTitle className="text-base flex items-center justify-between">
+      <span>{WORKOUT_PRESETS.find(p=>p.type===log.type)?.name||"自定义训练"}</span>
+      <span className="text-sm font-normal text-orange-600 flex items-center gap-1"><Flame className="w-4 h-4"/>预计消耗 {calculateBurn(log,weight)} kcal</span>
+    </CardTitle></CardHeader><CardContent className="space-y-4">
+      {log.exercises.map((ex,exIdx)=>{const isCollapsed=collapsed[exIdx];
+        return (<div key={exIdx} className="border rounded-lg overflow-hidden"><div className="flex items-center justify-between p-3 bg-muted">
+          <div className="flex items-center gap-2 flex-1"><Input value={ex.name} onChange={e=>updateExerciseName(exIdx,e.target.value)} className="h-8 font-medium bg-transparent border-0 px-0 focus-visible:ring-0"/>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${ex.kind==="strength"?"bg-blue-100 text-blue-700":"bg-orange-100 text-orange-700"}`}>{ex.kind==="strength"?"力量":"有氧"}</span>
+            <button onClick={()=>{if(confirm(`将「${ex.name}」切换为${ex.kind==="strength"?"有氧":"力量"}？`))toggleKind(exIdx);}} className="text-[10px] text-muted-foreground hover:text-foreground underline ml-1">切换</button>
+          </div>
+          <div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={()=>setCollapsed(c=>({...c,[exIdx]:!c[exIdx]}))}>{isCollapsed?<ChevronDown className="w-4 h-4"/>:<ChevronUp className="w-4 h-4"/>}</Button>
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={()=>removeExercise(exIdx)}><X className="w-4 h-4"/></Button></div>
+        </div>
+        {!isCollapsed&&(<div className="p-3 space-y-2">{ex.kind==="strength"?<>{ex.sets.map((set,setIdx)=>(<div key={setIdx} className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground w-8">组{setIdx+1}</span><Input type="number" placeholder="重量(kg)" className="w-24 h-8" value={set.weight||""} onChange={e=>updateSet(exIdx,setIdx,"weight",parseFloat(e.target.value)||0)}/><span className="text-sm">kg</span>
+          <Input type="number" placeholder="次数" className="w-20 h-8" value={set.reps||""} onChange={e=>updateSet(exIdx,setIdx,"reps",parseInt(e.target.value)||0)}/><span className="text-sm">次</span>
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={()=>removeSet(exIdx,setIdx)}><X className="w-3 h-3"/></Button></div>))}
+          <Button variant="ghost" size="sm" onClick={()=>addSet(exIdx)}><Plus className="w-3 h-3 mr-1"/>加一组</Button></>
+          :(<div className="grid grid-cols-3 gap-2"><div><label className="text-xs text-muted-foreground">速度 (km/h)</label><Input type="number" step="0.1" value={ex.cardioParams?.speed||""} onChange={e=>updateCardioParam(exIdx,"speed",parseFloat(e.target.value)||0)}/></div>
+            <div><label className="text-xs text-muted-foreground">坡度 (%)</label><Input type="number" value={ex.cardioParams?.incline||""} onChange={e=>updateCardioParam(exIdx,"incline",parseFloat(e.target.value)||0)}/></div>
+            <div><label className="text-xs text-muted-foreground">时长 (min)</label><Input type="number" value={ex.cardioParams?.duration||""} onChange={e=>updateCardioParam(exIdx,"duration",parseInt(e.target.value)||0)}/></div></div>)}
+        </div>)}</div>);})}
+      <Button variant="outline" onClick={addExercise} className="w-full"><Plus className="w-4 h-4 mr-1"/>添加动作</Button>
+      <div className="grid grid-cols-3 gap-2 text-sm">
+        <div className="bg-orange-50 rounded-lg p-2 text-center"><div className="text-muted-foreground text-xs">有氧时长</div><div className="font-semibold text-orange-600">{getCardioDuration(log)} min</div></div>
+        <div className="bg-blue-50 rounded-lg p-2 text-center"><div className="text-muted-foreground text-xs">无氧时长</div><div className="font-semibold text-blue-600">{getStrengthDuration(log)} min</div></div>
+        <div className="flex items-center gap-2"><span className="text-sm font-medium">总时长:</span><Input type="number" className="w-16 h-8" value={log.duration} onChange={e=>setLog({...log,duration:parseInt(e.target.value)||0})}/><span className="text-sm">min</span></div>
+      </div>
+      <div><span className="text-sm font-medium">备注:</span><Input value={log.notes} onChange={e=>setLog({...log,notes:e.target.value})} placeholder="感受、强度、下次调整..."/></div>
+    </CardContent></Card>)}
+  </div>);
 }

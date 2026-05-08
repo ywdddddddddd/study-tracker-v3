@@ -1,296 +1,199 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
+import { pinyin } from "pinyin-pro";
 import { motion } from "framer-motion";
-import { UtensilsCrossed, Search, Plus, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
-import {
-  getFoodEntries,
-  addFoodEntry,
-  deleteFoodEntry,
-  getCustomFoods,
-  type FoodEntry,
-} from "@/lib/db";
 import { FOOD_DATABASE } from "@/data/presets";
+import {
+  type FoodEntry, getOrCreateProfile, calculateMacros, getFoodEntries,
+  addFoodEntry, deleteFoodEntry, getCustomFoods, saveCustomFood,
+  deleteCustomFood, getFoodEntriesInRange,
+} from "@/lib/db";
+import dayjs from "dayjs";
 
-const CATEGORIES = [
-  { key: "all", label: "全部" },
-  { key: "protein", label: "蛋白质" },
-  { key: "carb", label: "碳水" },
-  { key: "veg", label: "蔬菜" },
-  { key: "fat", label: "脂肪" },
-  { key: "other", label: "其它" },
-] as const;
+const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.04 } } };
 
-const MEALS = [
-  { key: "breakfast", label: "早餐" },
-  { key: "lunch", label: "午餐" },
-  { key: "dinner", label: "晚餐" },
-  { key: "snack", label: "加餐" },
-] as const;
+const meals = ["breakfast", "lunch", "dinner", "snack"] as const;
+const mealLabels: Record<string, string> = { breakfast: "早餐", lunch: "午餐", dinner: "晚餐", snack: "加餐" };
+const catLabel: Record<string, string> = { protein: "蛋白质", carb: "碳水", veg: "蔬菜", fat: "脂肪", other: "其它" };
+const catOrder: Record<string, number> = { protein: 1, carb: 2, veg: 3, fat: 4, other: 5 };
+const FOOD_USAGE_KEY = "study-tracker-food-usage";
 
-const item = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: "easeOut" as const } },
-};
-
-const container = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.04 } },
-};
-
-function getToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function getFoodUsage(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(FOOD_USAGE_KEY) || "{}"); } catch { return {}; }
+}
+function incrementFoodUsage(name: string) {
+  const u = getFoodUsage(); u[name] = (u[name] || 0) + 1;
+  localStorage.setItem(FOOD_USAGE_KEY, JSON.stringify(u));
 }
 
 export default function NutritionPage() {
-  const [loading, setLoading] = useState(true);
+  const [date, setDate] = useState(dayjs().format("YYYY-MM-DD"));
   const [entries, setEntries] = useState<FoodEntry[]>([]);
-  const [search, setSearch] = useState("");
-  const [activeCat, setActiveCat] = useState("all");
-  const [selectedMeal, setSelectedMeal] = useState<string>("breakfast");
-  const today = getToday();
+  const [targets, setTargets] = useState({ calories: 1900, protein: 154, carbs: 156, fat: 63 });
+  const [newEntry, setNewEntry] = useState({ meal: "breakfast" as typeof meals[number], name: "", weight: 100, calories: 0, protein: 0, carbs: 0, fat: 0, isCustom: false });
+  const [selectedFood, setSelectedFood] = useState("");
+  const [customFoods, setCustomFoods] = useState<{ name: string; unit: string; gramsPerUnit: number; calories: number; protein: number; carbs: number; fat: number; category: string }[]>([]);
+  const [foodEditorOpen, setFoodEditorOpen] = useState(false);
+  const [editingFood, setEditingFood] = useState<{ name: string; unit: string; gramsPerUnit: number; calories: number; protein: number; carbs: number; fat: number; category: string } | null>(null);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [scheduleData, setScheduleData] = useState<{ date: string; actual: number; target: number }[]>([]);
+  const [foodSearch, setFoodSearch] = useState("");
+  const [foodTab, setFoodTab] = useState<string>("top8");
 
-  const [foodDb, setFoodDb] = useState(FOOD_DATABASE);
-
-  useEffect(() => {
-    loadData();
-  }, []);
+  useEffect(() => { loadData(); }, [date]);
+  useEffect(() => { loadCustomFoods(); }, []);
 
   async function loadData() {
-    try {
-      const [foods, customs] = await Promise.all([getFoodEntries(today), getCustomFoods()]);
-      setEntries(foods);
-      if (customs.length > 0) {
-        const customItems = customs.map((c) => ({
-          name: c.name, unit: c.unit, gramsPerUnit: c.gramsPerUnit,
-          calories: c.calories, protein: c.protein, carbs: c.carbs,
-          fat: c.fat, category: c.category as "protein" | "carb" | "veg" | "fat" | "other",
-        }));
-        setFoodDb([...FOOD_DATABASE, ...customItems]);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    const data = await getFoodEntries(date); setEntries(data);
+    const profile = await getOrCreateProfile(); setTargets(calculateMacros(profile));
   }
-
-  const filtered = foodDb.filter((f) => {
-    if (activeCat !== "all" && f.category !== activeCat) return false;
-    if (search && !f.name.includes(search)) return false;
-    return true;
-  });
-
-  async function addFood(food: typeof FOOD_DATABASE[number]) {
-    try {
-      await addFoodEntry({
-        date: today, meal: selectedMeal as "breakfast" | "lunch" | "dinner" | "snack",
-        name: food.name, weight: food.gramsPerUnit, calories: food.calories,
-        protein: food.protein, carbs: food.carbs, fat: food.fat, isCustom: false,
-      });
-      toast.success(`已添加 ${food.name}`);
-      const foods = await getFoodEntries(today);
-      setEntries(foods);
-    } catch (e) {
-      toast.error("添加失败");
-    }
+  useEffect(() => { (async () => {
+    const end = dayjs().format("YYYY-MM-DD"); const start = dayjs().subtract(6, "day").format("YYYY-MM-DD");
+    const history = await getFoodEntriesInRange(start, end);
+    for (const e of history) { if (e.name) incrementFoodUsage(e.name); }
+  })(); }, [date]);
+  async function loadCustomFoods() { setCustomFoods(await getCustomFoods()); }
+  async function loadSchedule() {
+    const profile = await getOrCreateProfile(); const target = calculateMacros(profile).calories;
+    const end = dayjs().format("YYYY-MM-DD"); const start = dayjs().subtract(6, "day").format("YYYY-MM-DD");
+    const ents = await getFoodEntriesInRange(start, end);
+    const map: Record<string, number> = {}; for (const e of ents) map[e.date] = (map[e.date] || 0) + e.calories;
+    setScheduleData(Array.from({length:7}, (_,i) => { const d=dayjs().subtract(6-i,"day").format("YYYY-MM-DD"); return {date:d, actual:map[d]||0, target}; }));
   }
+  useEffect(() => { if (showSchedule) loadSchedule(); }, [showSchedule]);
 
-  async function removeEntry(id: number) {
-    try {
-      await deleteFoodEntry(id);
-      toast.success("已删除");
-      setEntries((prev) => prev.filter((e) => e.id !== id));
-    } catch (e) {
-      toast.error("删除失败");
-    }
-  }
+  const allFoods = [...FOOD_DATABASE.map(f => ({ name: f.name, unit: f.unit, gramsPerUnit: f.gramsPerUnit, calories: f.calories, protein: f.protein, carbs: f.carbs, fat: f.fat, category: f.category as string }))];
+  const customNames = new Set(customFoods.map(f => f.name));
+  for (const cf of customFoods) { const idx = allFoods.findIndex(f => f.name === cf.name); if (idx >= 0) allFoods[idx] = cf; else allFoods.push(cf); }
+  allFoods.sort((a,b)=>{ const cd=(catOrder[a.category]||99)-(catOrder[b.category]||99); if(cd!==0)return cd; return pinyin(a.name,{toneType:"none",type:"array"}).join("").toLowerCase().localeCompare(pinyin(b.name,{toneType:"none",type:"array"}).join("").toLowerCase()); });
 
-  const totals = entries.reduce(
-    (acc, e) => ({
-      calories: acc.calories + e.calories,
-      protein: acc.protein + e.protein,
-      carbs: acc.carbs + e.carbs,
-      fat: acc.fat + e.fat,
-    }),
-    { calories: 0, protein: 0, carbs: 0, fat: 0 }
-  );
+  const usage = getFoodUsage();
+  const top8 = foodSearch ? [] : allFoods.map(f=>({food:f,count:usage[f.name]||0})).sort((a,b)=>b.count-a.count).slice(0,8).filter(r=>r.count>0).map(r=>r.food);
+  const filteredFoods = foodSearch ? allFoods.filter(f => { const s=foodSearch.toLowerCase().trim(); if(f.name.includes(s))return true; const py=pinyin(f.name,{toneType:"none"}).replace(/\s/g,"").toLowerCase(); if(py.includes(s))return true; const inits=pinyin(f.name,{pattern:"first",toneType:"none"}).replace(/\s/g,"").toLowerCase(); if(inits.includes(s))return true; if((catLabel[f.category]||"").includes(s))return true; return false; }) : allFoods;
+
+  const addEntry = async () => {
+    if (!newEntry.name) { toast.error("请选择或输入食物"); return; }
+    await addFoodEntry({ date, meal: newEntry.meal, name: newEntry.name, weight: newEntry.weight, calories: newEntry.calories, protein: newEntry.protein, carbs: newEntry.carbs, fat: newEntry.fat, isCustom: newEntry.isCustom });
+    incrementFoodUsage(newEntry.name); await loadData();
+    setNewEntry({ meal: newEntry.meal, name: "", weight: 100, calories: 0, protein: 0, carbs: 0, fat: 0, isCustom: false }); setSelectedFood(""); toast.success("已添加");
+  };
+  const removeEntry = async (id: number) => { await deleteFoodEntry(id); await loadData(); };
+  const selectPresetFood = (name: string) => {
+    const food = allFoods.find(f => f.name === name); if (!food) return;
+    setSelectedFood(name); const ratio = newEntry.weight / food.gramsPerUnit;
+    setNewEntry({ ...newEntry, name: food.name, calories: Math.round(food.calories*ratio), protein: Math.round(food.protein*ratio*10)/10, carbs: Math.round(food.carbs*ratio*10)/10, fat: Math.round(food.fat*ratio*10)/10, isCustom: false });
+  };
+  const updateWeight = (w: number) => {
+    const food = allFoods.find(f => f.name === selectedFood);
+    if (!food) { setNewEntry({ ...newEntry, weight: w }); return; }
+    const ratio = w / food.gramsPerUnit;
+    setNewEntry({ ...newEntry, weight: w, calories: Math.round(food.calories*ratio), protein: Math.round(food.protein*ratio*10)/10, carbs: Math.round(food.carbs*ratio*10)/10, fat: Math.round(food.fat*ratio*10)/10 });
+  };
+  const saveFoodToLibrary = async () => { if (!editingFood||!editingFood.name) return; await saveCustomFood(editingFood); await loadCustomFoods(); setEditingFood(null); toast.success("食物已保存"); };
+  const removeFoodFromLibrary = async (name: string) => { if(!confirm(`确定从食物库删除「${name}」？`))return; await deleteCustomFood(name); await loadCustomFoods(); };
+
+  const totals = entries.reduce((acc,e)=>({calories:acc.calories+e.calories,protein:acc.protein+e.protein,carbs:acc.carbs+e.carbs,fat:acc.fat+e.fat}),{calories:0,protein:0,carbs:0,fat:0});
 
   return (
     <div className="space-y-6">
-      <motion.div
-        initial={{ opacity: 0, y: -8 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between"
-      >
-        <div>
-          <h1 className="font-heading text-2xl">饮食营养</h1>
-          <p className="text-sm text-muted-foreground mt-1">{today}</p>
-        </div>
+      <motion.div initial={{opacity:0,y:-8}} animate={{opacity:1,y:0}} className="flex items-center gap-2 flex-wrap">
+        <h1 className="font-heading text-2xl">饮食营养</h1>
+        <Input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-auto h-8 text-sm" />
+        <Button variant="outline" size="sm" onClick={()=>setFoodEditorOpen(true)}>🍱 管理食物库</Button>
+        <Button variant="outline" size="sm" onClick={()=>setShowSchedule(!showSchedule)}>📅 {showSchedule?"隐藏日程":"饮食日程"}</Button>
       </motion.div>
-
-      {/* Summary Cards */}
-      <motion.div
-        variants={container}
-        initial="hidden"
-        animate="show"
-        className="grid grid-cols-2 lg:grid-cols-4 gap-3"
-      >
-        {[
-          { label: "热量", value: totals.calories, unit: "kcal", color: "text-orange-500" },
-          { label: "蛋白质", value: totals.protein, unit: "g", color: "text-blue-500" },
-          { label: "碳水", value: totals.carbs, unit: "g", color: "text-green-500" },
-          { label: "脂肪", value: totals.fat, unit: "g", color: "text-yellow-500" },
-        ].map((s, i) => (
-          <motion.div key={s.label} variants={item}>
-            <Card>
-              <CardContent className="p-4">
-                <p className="text-xs text-muted-foreground">{s.label}</p>
-                <span className={`text-xl font-bold font-display ${s.color}`}>
-                  {loading ? <Skeleton className="h-7 w-12 inline-block" /> : s.value}
-                  <span className="text-xs font-normal text-muted-foreground ml-1">{s.unit}</span>
-                </span>
-              </CardContent>
-            </Card>
-          </motion.div>
-        ))}
+      {showSchedule && (
+        <Card><CardHeader className="pb-3"><CardTitle className="text-base">饮食日程 (近7天)</CardTitle></CardHeader>
+          <CardContent><div className="grid grid-cols-7 gap-1 text-xs">
+            {scheduleData.map(d=>{const isToday=d.date===dayjs().format("YYYY-MM-DD");const hasData=d.actual>0;const deficit=hasData?d.target-d.actual:0;const pct=d.target>0?Math.round((d.actual/d.target)*100):0;
+              return (<button key={d.date} onClick={()=>{setDate(d.date);setShowSchedule(false);}} className={`p-2 rounded-md text-center border ${isToday?"border-primary bg-primary/10 font-semibold":"border-gray-200 hover:bg-muted"}`}>
+                <div className="text-[10px]">{dayjs(d.date).format("ddd")}</div><div className="text-[11px] font-medium">{d.date.slice(5)}</div>
+                <div className={`text-xs mt-0.5 font-semibold ${!hasData?"text-muted-foreground":pct<=100?"text-green-600":"text-red-600"}`}>{hasData?`${d.actual}/${d.target}`:`0/${d.target}`}</div>
+                <div className={`text-[10px] ${!hasData?"text-muted-foreground":deficit>=0?"text-green-500":"text-red-500"}`}>{!hasData?"无数据":deficit>=0?`-${deficit}`:`+${-deficit}`}</div>
+              </button>);})}
+          </div></CardContent></Card>
+      )}
+      <motion.div variants={container} initial="hidden" animate="show">
+        <Card><CardHeader className="pb-3"><CardTitle className="text-base">今日摄入概览</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div><div className="flex justify-between text-sm mb-1"><span>热量</span><span>{totals.calories}/{targets.calories} kcal</span></div><Progress value={totals.calories} max={targets.calories} className="h-2"/></div>
+            <div className="grid grid-cols-3 gap-4">
+              <div><div className="flex justify-between text-sm mb-1"><span>蛋白质</span><span>{totals.protein.toFixed(1)}/{targets.protein}g</span></div><Progress value={totals.protein} max={targets.protein} className="h-2"/></div>
+              <div><div className="flex justify-between text-sm mb-1"><span>碳水</span><span>{totals.carbs.toFixed(1)}/{targets.carbs}g</span></div><Progress value={totals.carbs} max={targets.carbs} className="h-2"/></div>
+              <div><div className="flex justify-between text-sm mb-1"><span>脂肪</span><span>{totals.fat.toFixed(1)}/{targets.fat}g</span></div><Progress value={totals.fat} max={targets.fat} className="h-2"/></div>
+            </div>
+          </CardContent></Card>
       </motion.div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Food Selector */}
-        <motion.div
-          initial={{ opacity: 0, x: -16 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="lg:col-span-2 space-y-4"
-        >
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Search className="h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="搜索食物..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="h-8"
-                />
+      {foodEditorOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={()=>{setFoodEditorOpen(false);setEditingFood(null);}}>
+          <div className="bg-background rounded-xl shadow-xl p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4"><h3 className="text-lg font-semibold">管理食物库</h3><Button variant="ghost" size="sm" onClick={()=>{setFoodEditorOpen(false);setEditingFood(null);}}>✕</Button></div>
+            <p className="text-xs text-muted-foreground mb-3">自定义食物会覆盖内置同名食物。删除仅移除自定义版本。</p>
+            {editingFood ? (<div className="space-y-3 border rounded-lg p-4"><h4 className="font-medium">{editingFood.name?"编辑":"新增"}食物</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <Input placeholder="名称" value={editingFood.name} onChange={e=>setEditingFood({...editingFood,name:e.target.value})}/>
+                <Input placeholder="单位(如:100g,1个)" value={editingFood.unit} onChange={e=>setEditingFood({...editingFood,unit:e.target.value})}/>
+                <Input type="number" placeholder="每单位克数" value={editingFood.gramsPerUnit||""} onChange={e=>setEditingFood({...editingFood,gramsPerUnit:parseFloat(e.target.value)||0})}/>
+                <Input type="number" placeholder="热量(每单位)" value={editingFood.calories||""} onChange={e=>setEditingFood({...editingFood,calories:parseFloat(e.target.value)||0})}/>
+                <Input type="number" placeholder="蛋白质" value={editingFood.protein||""} onChange={e=>setEditingFood({...editingFood,protein:parseFloat(e.target.value)||0})}/>
+                <Input type="number" placeholder="碳水" value={editingFood.carbs||""} onChange={e=>setEditingFood({...editingFood,carbs:parseFloat(e.target.value)||0})}/>
+                <Input type="number" placeholder="脂肪" value={editingFood.fat||""} onChange={e=>setEditingFood({...editingFood,fat:parseFloat(e.target.value)||0})}/>
+                <select value={editingFood.category} onChange={e=>setEditingFood({...editingFood,category:e.target.value})} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+                  <option value="carb">碳水</option><option value="protein">蛋白质</option><option value="veg">蔬菜</option><option value="fat">脂肪</option><option value="other">其它</option>
+                </select>
               </div>
-              {/* Meal tabs */}
-              <Tabs value={selectedMeal} onValueChange={setSelectedMeal} className="mt-2">
-                <TabsList className="w-full">
-                  {MEALS.map((m) => (
-                    <TabsTrigger key={m.key} value={m.key} className="flex-1 text-xs">
-                      {m.label}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-              {/* Category tabs */}
-              <div className="flex gap-1 mt-2 overflow-x-auto">
-                {CATEGORIES.map((c) => (
-                  <Badge
-                    key={c.key}
-                    variant={activeCat === c.key ? "default" : "outline"}
-                    className="cursor-pointer shrink-0"
-                    onClick={() => setActiveCat(c.key)}
-                  >
-                    {c.label}
-                  </Badge>
-                ))}
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              <ScrollArea className="h-[400px]">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 p-1">
-                  {filtered.map((food) => (
-                    <motion.button
-                      key={food.name}
-                      whileHover={{ scale: 1.01 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={() => addFood(food)}
-                      className="flex items-center justify-between p-2.5 rounded-md hover:bg-accent text-left transition-colors"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{food.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {food.unit} · {food.calories}kcal · P{food.protein}g
-                        </p>
-                      </div>
-                      <Plus className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
-                    </motion.button>
-                  ))}
-                  {filtered.length === 0 && (
-                    <p className="col-span-2 text-center text-sm text-muted-foreground py-12">
-                      没有找到匹配的食物
-                    </p>
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        {/* Today's Entries */}
-        <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }}>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <UtensilsCrossed className="h-4 w-4" />
-                今日记录
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <ScrollArea className="h-[500px]">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs">食物</TableHead>
-                      <TableHead className="text-xs w-16">热量</TableHead>
-                      <TableHead className="text-xs w-8"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {entries.map((e) => (
-                      <TableRow key={e.id}>
-                        <TableCell className="text-xs">
-                          <div>{e.name}</div>
-                          <div className="text-muted-foreground">{e.meal === "breakfast" ? "早" : e.meal === "lunch" ? "午" : e.meal === "dinner" ? "晚" : "加"}</div>
-                        </TableCell>
-                        <TableCell className="text-xs font-medium">{e.calories}</TableCell>
-                        <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            onClick={() => e.id && removeEntry(e.id)}
-                          >
-                            <Trash2 className="h-3 w-3 text-muted-foreground" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {entries.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={3} className="text-center text-xs text-muted-foreground py-8">
-                          点击左侧食物添加
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </motion.div>
-      </div>
-    </div>
-  );
+              <div className="flex gap-2"><Button onClick={saveFoodToLibrary}>💾 保存</Button><Button variant="outline" onClick={()=>setEditingFood(null)}>取消</Button></div>
+            </div>) : (<>
+              <Button variant="outline" size="sm" className="mb-3" onClick={()=>setEditingFood({name:"",unit:"100g",gramsPerUnit:100,calories:0,protein:0,carbs:0,fat:0,category:"other"})}>+ 添加新食物</Button>
+              <div className="space-y-2">{allFoods.map(food=>(<div key={food.name} className="flex items-center justify-between text-sm border-b py-2">
+                <div className="flex-1"><span className="font-medium">{food.name}</span><span className="text-muted-foreground ml-2">{food.unit} | {food.calories}kcal | P:{food.protein} C:{food.carbs} F:{food.fat}</span>
+                  {customNames.has(food.name)&&<span className="ml-2 text-[10px] bg-blue-100 text-blue-700 px-1 rounded">自定义</span>}</div>
+                <div className="flex gap-1"><Button variant="ghost" size="sm" className="h-7 text-xs" onClick={()=>setEditingFood({...food})}>编辑</Button>
+                  {customNames.has(food.name)&&<Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={()=>removeFoodFromLibrary(food.name)}>删除</Button>}</div>
+              </div>))}</div>
+            </>)}
+          </div></div>
+      )}
+      <Card><CardHeader className="pb-3"><CardTitle className="text-base">添加食物</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex gap-2 flex-wrap">
+            <select value={newEntry.meal} onChange={e=>setNewEntry({...newEntry,meal:e.target.value as typeof meals[number]})} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+              {meals.map(m=><option key={m} value={m}>{mealLabels[m]}</option>)}</select>
+            <Input placeholder="🔍 搜索食物 (名称/拼音/首字母)" value={foodSearch} onChange={e=>{setFoodSearch(e.target.value);setSelectedFood("");}} className="flex-1 min-w-[150px]"/>
+            <Input type="number" placeholder="重量(g)" className="w-24" value={newEntry.weight||""} onChange={e=>updateWeight(parseFloat(e.target.value)||0)}/>
+          </div>
+          <div className="flex gap-1 flex-wrap border-b pb-2">
+            {[{key:"top8",label:"🔥 Top8"},{key:"protein",label:"蛋白质"},{key:"carb",label:"碳水"},{key:"veg",label:"蔬菜"},{key:"fat",label:"脂肪"},{key:"other",label:"其它"}].map(t=>(
+              <button key={t.key} onClick={()=>{setFoodTab(t.key);setFoodSearch("");}} className={`text-xs px-3 py-1 rounded-full transition-colors ${foodTab===t.key?"bg-primary text-primary-foreground":"bg-muted hover:bg-muted-foreground/20"}`}>{t.label}</button>))}
+          </div>
+          <div className="grid grid-cols-3 md:grid-cols-4 gap-1 max-h-40 overflow-y-auto">
+            {foodTab==="top8"?(top8.length>0?top8.map(f=>(<button key={f.name} onClick={()=>selectPresetFood(f.name)} className="text-xs p-2 rounded border bg-muted/20 hover:bg-primary/10 text-left"><div className="font-medium">{f.name}</div><div className="text-[10px] text-muted-foreground">{f.unit} | {f.calories}kcal</div></button>)):<p className="col-span-full text-xs text-muted-foreground text-center py-4">暂无常用食物</p>)
+              :allFoods.filter(f=>f.category===foodTab).map(f=>(<button key={f.name} onClick={()=>selectPresetFood(f.name)} className="text-xs p-2 rounded border bg-muted/20 hover:bg-primary/10 text-left"><div className="font-medium">{f.name}</div><div className="text-[10px] text-muted-foreground">{f.unit} | {f.calories}kcal</div></button>))}
+          </div>
+          {foodSearch&&<div className="max-h-24 overflow-y-auto border rounded-lg p-1 space-y-0.5">
+            {filteredFoods.map(f=>(<button key={f.name} onClick={()=>{selectPresetFood(f.name);setFoodSearch("");}} className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted">{f.name} <span className="text-muted-foreground text-xs">{f.unit} | {f.calories}kcal</span></button>))}
+            {filteredFoods.length===0&&<p className="text-xs text-muted-foreground text-center py-2">无匹配</p>}</div>}
+          <div className="flex gap-2 flex-wrap">
+            <Input placeholder="食物名称" value={newEntry.name} onChange={e=>setNewEntry({...newEntry,name:e.target.value,isCustom:true})} className="flex-1"/>
+            <Input type="number" placeholder="热量" value={newEntry.calories||""} onChange={e=>setNewEntry({...newEntry,calories:parseFloat(e.target.value)||0})} className="w-20"/>
+            <Input type="number" placeholder="蛋白质" value={newEntry.protein||""} onChange={e=>setNewEntry({...newEntry,protein:parseFloat(e.target.value)||0})} className="w-20"/>
+            <Input type="number" placeholder="碳水" value={newEntry.carbs||""} onChange={e=>setNewEntry({...newEntry,carbs:parseFloat(e.target.value)||0})} className="w-20"/>
+            <Input type="number" placeholder="脂肪" value={newEntry.fat||""} onChange={e=>setNewEntry({...newEntry,fat:parseFloat(e.target.value)||0})} className="w-20"/>
+          </div>
+          <Button onClick={addEntry}>+ 添加</Button>
+        </CardContent></Card>
+      {meals.map(meal=>{const mealEntries=entries.filter(e=>e.meal===meal);if(mealEntries.length===0)return null;
+        return (<Card key={meal}><CardHeader className="pb-3"><CardTitle className="text-sm">{mealLabels[meal]}</CardTitle></CardHeader><CardContent className="space-y-2">
+          {mealEntries.map((entry,i)=>(<div key={i} className="flex items-center justify-between text-sm border-b pb-2">
+            <div className="flex-1"><span className="font-medium">{entry.name}</span><span className="text-muted-foreground ml-2">{entry.weight}g</span></div>
+            <div className="flex items-center gap-3 text-muted-foreground"><span>{entry.calories} kcal</span><span className="text-blue-500">P:{entry.protein}g</span><span className="text-green-500">C:{entry.carbs}g</span><span className="text-yellow-500">F:{entry.fat}g</span>
+              {entry.id&&<Button variant="ghost" size="sm" className="h-6 text-destructive" onClick={()=>removeEntry(entry.id!)}>✕</Button>}</div>
+          </div>))}</CardContent></Card>);})}
+    </div>);
 }
