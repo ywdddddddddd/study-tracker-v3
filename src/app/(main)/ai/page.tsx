@@ -17,13 +17,6 @@ import { toast } from "sonner";
 import { getOrCreateProfile, calculateMacros, type Task, type FoodEntry, getDailyPlan, saveDailyPlan, getDailyPlansInRange, getFoodEntries, getWorkoutLog, getWeightRecords, getSleepRecords, getFoodEntriesInRange, getWorkoutLogsInRange, getWeeklyReview, getGymSchedules, type WorkoutLog } from "@/lib/db";
 import { GYM_SCHEDULE } from "@/data/presets";
 
-const PRIMARY_URL="https://api.deepseek.com/chat/completions";
-const PRIMARY_KEY="sk-0fb0a98da71a46388a7701b842ecd438";
-const PRIMARY_MODEL="deepseek-v4-pro";
-const FALLBACK_URL="https://api.siliconflow.cn/v1/chat/completions";
-const FALLBACK_KEY="sk-lldpkkegjmpexefnwqijwkouvijszfnuzamqxofutkkzirro";
-const FALLBACK_MODEL="deepseek-ai/DeepSeek-R1";
-
 const SYSTEM_PROMPT=`你是wen的AI日程助手，精通学习科学、运动营养学和认知心理学。
 
 你的能力：
@@ -99,17 +92,17 @@ export default function AIPage(){
 
   const streamChat=useCallback(async(prompt:string)=>{
     const ctx=await gatherContext();const fullPrompt=`${ctx}\n\n用户问题：${prompt}`;
-    const body:Record<string,any>={model:PRIMARY_MODEL,messages:[{role:"system",content:SYSTEM_PROMPT},{role:"user",content:fullPrompt}],stream:true,max_tokens:4096,thinking:{type:"enabled"},reasoning_effort:"max"};
     abortRef.current=new AbortController();setIsLoading(true);
     try{
       let content="";let reasoning="";
       setConvs(prev=>[...prev,{role:"assistant",content:"...",reasoning:""}]);
-      const tryFetch=async(url:string,key:string,model:string):Promise<Response>=>{
-        return fetch(url,{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${key}`},body:JSON.stringify({...body,model}),signal:abortRef.current!.signal});
-      };
-      let res=await tryFetch(PRIMARY_URL,PRIMARY_KEY,PRIMARY_MODEL);
-      if(!res.ok&&[408,429,402].includes(res.status)){console.warn("Primary failed, trying fallback...");res=await tryFetch(FALLBACK_URL,FALLBACK_KEY,FALLBACK_MODEL);}
-      if(!res.ok)throw new Error(`API error: ${res.status}`);
+      const res=await fetch("/api/ai/chat",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({messages:[{role:"system",content:SYSTEM_PROMPT},{role:"user",content:fullPrompt}],stream:true}),
+        signal:abortRef.current!.signal,
+      });
+      if(!res.ok){const err=await res.json().catch(()=>({error:"Unknown"}));throw new Error(err.error||`API error: ${res.status}`);}
       const reader=res.body?.getReader();if(!reader)throw new Error("No reader");
       const decoder=new TextDecoder();let buffer="";
       while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split("\n");buffer=lines.pop()||"";

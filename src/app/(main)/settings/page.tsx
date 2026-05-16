@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { getOrCreateProfile, updateProfile, type Profile } from "@/lib/db";
 
@@ -15,19 +16,17 @@ const item={hidden:{opacity:0,y:12},show:{opacity:1,y:0,transition:{duration:0.3
 
 export default function SettingsPage(){
   const[profile,setProfile]=useState<Profile|null>(null);
-  const[deepseekKey,setDeepseekKey]=useState("");const[deepseekModel,setDeepseekModel]=useState("");
-  const[siliconKey,setSiliconKey]=useState("");const[siliconModel,setSiliconModel]=useState("");
+  const[apiStatus,setApiStatus]=useState<{ok:boolean;message:string}>({ok:false,message:"检查中..."});
 
   useEffect(()=>{
     getOrCreateProfile().then(setProfile);
-    setDeepseekKey(localStorage.getItem("ai_deepseek_key")||"");
-    setDeepseekModel(localStorage.getItem("ai_deepseek_model")||"deepseek-v4-pro");
-    setSiliconKey(localStorage.getItem("ai_silicon_key")||"");
-    setSiliconModel(localStorage.getItem("ai_silicon_model")||"deepseek-ai/DeepSeek-R1");
+    // Check API route health
+    fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:[{role:"user",content:"hi"}]})})
+      .then(r=>r.json()).then(d=>{if(d.error)setApiStatus({ok:false,message:d.error});else setApiStatus({ok:true,message:"连接正常"});})
+      .catch(()=>setApiStatus({ok:false,message:"无法连接 API"}));
   },[]);
 
   async function handleSaveProfile(){if(!profile)return;try{await updateProfile(profile);toast.success("资料已保存");}catch(e){toast.error("保存失败");}}
-  function handleSaveAI(){localStorage.setItem("ai_deepseek_key",deepseekKey);localStorage.setItem("ai_deepseek_model",deepseekModel);localStorage.setItem("ai_silicon_key",siliconKey);localStorage.setItem("ai_silicon_model",siliconModel);toast.success("AI 设置已保存");}
   const update=(f:keyof Profile,v:any)=>{if(!profile)return;setProfile({...profile,[f]:v});};
 
   return <div className="space-y-6 max-w-xl">
@@ -51,18 +50,13 @@ export default function SettingsPage(){
     <Separator/>
 
     <motion.div variants={item} initial="hidden" animate="show">
-      <Card><CardHeader><CardTitle className="text-base">AI 模型配置</CardTitle></CardHeader><CardContent className="space-y-4">
-        <div className="space-y-3">
-          <h4 className="text-sm font-medium">DeepSeek V4 Pro (主模型)</h4>
-          <div><Label className="text-xs mb-1">API Key</Label><Input type="password" value={deepseekKey} onChange={e=>setDeepseekKey(e.target.value)} placeholder="sk-..."/></div>
-          <div><Label className="text-xs mb-1">模型</Label><Select value={deepseekModel} onValueChange={(v)=>setDeepseekModel(v||"deepseek-v4-pro")}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="deepseek-v4-pro">deepseek-v4-pro</SelectItem><SelectItem value="deepseek-chat">deepseek-chat</SelectItem></SelectContent></Select></div>
+      <Card><CardHeader><CardTitle className="text-base">AI 模型</CardTitle></CardHeader><CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">DeepSeek V4 Pro + SiliconFlow 备用</span>
+          <Badge variant={apiStatus.ok?"default":"destructive"} className="text-xs">{apiStatus.ok?"已连接":"未配置"}</Badge>
         </div>
-        <div className="space-y-3 pt-2 border-t">
-          <h4 className="text-sm font-medium text-muted-foreground">SiliconFlow (备用)</h4>
-          <div><Label className="text-xs mb-1">API Key</Label><Input type="password" value={siliconKey} onChange={e=>setSiliconKey(e.target.value)} placeholder="sk-..."/></div>
-          <div><Label className="text-xs mb-1">模型</Label><Select value={siliconModel} onValueChange={(v)=>setSiliconModel(v||"deepseek-ai/DeepSeek-R1")}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="deepseek-ai/DeepSeek-R1">DeepSeek-R1</SelectItem><SelectItem value="deepseek-ai/DeepSeek-V3">DeepSeek-V3</SelectItem></SelectContent></Select></div>
-        </div>
-        <Button onClick={handleSaveAI} variant="secondary" className="w-full">保存 AI 设置</Button>
+        <p className="text-xs text-muted-foreground">{apiStatus.message}</p>
+        <p className="text-xs text-muted-foreground">API Key 在 Vercel 环境变量中配置。本地开发请在 <code className="bg-muted px-1 rounded">.env.local</code> 中设置 <code className="bg-muted px-1 rounded">DEEPSEEK_API_KEY</code> 和 <code className="bg-muted px-1 rounded">SILICONFLOW_API_KEY</code>。</p>
       </CardContent></Card>
     </motion.div>
   </div>;
